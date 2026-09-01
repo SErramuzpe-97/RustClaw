@@ -86,8 +86,23 @@ impl Session {
     }
 
     /// A session id derived from the wall clock, stable enough to sort by name.
+    ///
+    /// Two sessions created in the same second would otherwise share an id and
+    /// overwrite each other's transcript, so a per-second sequence disambiguates
+    /// them while the common case stays a bare `s{secs}`.
     pub fn new_id() -> String {
-        format!("s{}", now_secs())
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static LAST_SECS: AtomicU64 = AtomicU64::new(0);
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let secs = now_secs();
+        // The runtime is current-thread, so this read-modify-write is race-free.
+        let n = if LAST_SECS.swap(secs, Ordering::Relaxed) == secs {
+            SEQ.fetch_add(1, Ordering::Relaxed) + 1
+        } else {
+            SEQ.store(0, Ordering::Relaxed);
+            0
+        };
+        if n == 0 { format!("s{secs}") } else { format!("s{secs}_{n}") }
     }
 
     /// Title for display: the stored one, else derived from the first user
@@ -651,6 +666,18 @@ mod tests {
         assert!(Session::delete(&r, "../victima/notas").is_err());
         // The out-of-tree file was never touched.
         assert!(r.join("victima/notas.jsonl").exists(), "traversal must not reach it");
+    }
+
+    #[test]
+    fn new_ids_are_unique_within_a_second() {
+        // Two "new chat" clicks in the same second must not collide, or the
+        // second session overwrites the first's transcript.
+        let ids: Vec<String> = (0..5).map(|_| Session::new_id()).collect();
+        let unique: std::collections::HashSet<&String> = ids.iter().collect();
+        assert_eq!(unique.len(), ids.len(), "ids collided: {ids:?}");
+        for id in &ids {
+            assert!(is_valid_id(id), "{id} must survive path validation");
+        }
     }
 
     #[test]
