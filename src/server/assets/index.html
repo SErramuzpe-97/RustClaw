@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RustClaw</title>
+<link rel="stylesheet" href="/assets/styles.css">
+<link rel="stylesheet" href="/assets/vendor/hl/theme-light.css" media="(prefers-color-scheme: light)" id="hl-light">
+<link rel="stylesheet" href="/assets/vendor/hl/theme-dark.css" media="(prefers-color-scheme: dark)" id="hl-dark">
+<!-- The vendored ESM modules import each other by bare specifier, so the
+     browser needs this map. No bundler, no import rewriting. -->
+<script type="importmap">
+{
+  "imports": {
+    "preact": "/assets/vendor/preact.mjs",
+    "preact/hooks": "/assets/vendor/hooks.mjs",
+    "htm": "/assets/vendor/htm.mjs",
+    "marked": "/assets/vendor/marked.mjs",
+    "hljs": "/assets/vendor/hl/core.mjs"
+  }
+}
+</script>
+</head>
+<body>
+<div id="app"></div>
+<script type="module" src="/assets/app.js"></script>
+<noscript>RustClaw's interface needs JavaScript. The terminal REPL (<code>rustclaw</code>) does not.</noscript>
+</body>
+</html>

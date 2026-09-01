@@ -33,6 +33,10 @@ For local development just `cargo run`.
 
 ## Use
 
+On macOS, `./scripts/make-app.sh` builds `RustClaw.app` — double-click it and the
+server starts and the UI opens. The binary lives inside the bundle, so the app is
+self-contained.
+
 ```bash
 rustclaw config --init     # write ~/.rustclaw/config.toml
 rustclaw                   # terminal chat (default)
@@ -117,8 +121,10 @@ path.
   provider's own `usage`, the approach IronClaw takes.
 - **No SQLite.** Transcripts are append-only JSONL; there is no SQL engine
   resident in memory.
-- **No TUI framework and no SPA.** The REPL is line-oriented ANSI; the web UI is
-  one embedded HTML file with no build step.
+- **No TUI framework, no bundler.** The REPL is line-oriented ANSI. The web UI is
+  Preact with `htm`, vendored as ES modules and embedded in the binary: the
+  source in the repo is the source the browser runs. No Node, no `npm install`,
+  no CDN — so it works offline on the device.
 - **Static dispatch.** Providers and tools are an enum and a slice of function
   pointers, so no boxed future is allocated per tool call.
 

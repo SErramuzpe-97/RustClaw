@@ -1,26 +1,29 @@
-//! HTTP surface: a single-page web UI plus a small JSON/SSE API.
+//! HTTP surface: a Preact single-page UI plus a JSON/SSE API.
 //!
 //! OpenClaw's control plane is a WebSocket protocol with three frame types and
 //! a registry of several hundred methods, backed by a Lit+Vite SPA of 1,477
-//! files. Here a POST to start a turn and an SSE stream to watch it do the same
-//! job, and the UI is one embedded HTML file — no bundler, no Node, no assets
-//! on disk.
+//! files. Here a POST starts a turn, an SSE stream reports its progress, and
+//! the UI is a handful of files embedded in the binary — no bundler, no Node,
+//! nothing to install on the device.
+
+mod assets;
+mod dto;
 
 use crate::agent::{Agent, AgentEvent};
+use crate::session::Session;
 use anyhow::{Context, Result};
-use axum::extract::State;
-use axum::http::{StatusCode, header};
+use axum::extract::{Path as AxPath, State};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response, Sse, sse};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use futures_util::stream::Stream;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{Mutex, broadcast};
 use tokio_util::sync::CancellationToken;
-
-const UI: &str = include_str!("ui.html");
 
 #[derive(Clone)]
 struct AppState {
@@ -30,6 +33,7 @@ struct AppState {
     cancel: Arc<Mutex<Option<CancellationToken>>>,
     /// Queues a message into the running turn without taking the agent lock.
     steer: tokio::sync::mpsc::UnboundedSender<String>,
+    home: PathBuf,
 }
 
 pub async fn run(agent: Agent) -> Result<()> {
@@ -37,22 +41,30 @@ pub async fn run(agent: Agent) -> Result<()> {
         let c = agent.server_config();
         format!("{}:{}", c.bind, c.port)
     };
+    let home = agent.home().to_path_buf();
     let events = agent.subscribe_sender();
-    let steer_tx = agent.steer_sender();
+    let steer = agent.steer_sender();
     let state = AppState {
         agent: Arc::new(Mutex::new(agent)),
         events,
         cancel: Arc::new(Mutex::new(None)),
-        steer: steer_tx,
+        steer,
+        home,
     };
 
     let app = Router::new()
-        .route("/", get(index))
-        .route("/chat", post(chat))
-        .route("/events", get(events_stream))
-        .route("/abort", post(abort))
-        .route("/steer", post(steer))
-        .route("/sessions", get(sessions))
+        .route("/", get(assets::index))
+        .route("/assets/{*path}", get(assets::serve))
+        .route("/api/chat", post(chat))
+        .route("/api/events", get(events_stream))
+        .route("/api/abort", post(abort))
+        .route("/api/steer", post(steer_turn))
+        .route("/api/regenerate", post(regenerate))
+        .route("/api/state", get(current_state))
+        .route("/api/sessions", get(list_sessions).post(create_session))
+        .route("/api/sessions/{id}", get(read_session).patch(rename_session))
+        .route("/api/sessions/{id}", delete(remove_session))
+        .route("/api/sessions/{id}/select", post(select_session))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&bind)
@@ -63,9 +75,7 @@ pub async fn run(agent: Agent) -> Result<()> {
     Ok(())
 }
 
-async fn index() -> impl IntoResponse {
-    ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], UI)
-}
+// --- turns -----------------------------------------------------------------
 
 #[derive(Deserialize)]
 struct ChatRequest {
@@ -77,17 +87,27 @@ struct ChatResponse {
     reply: String,
 }
 
+/// Take the agent for the duration of a turn.
+///
+/// One turn at a time: a second concurrent turn would interleave into the same
+/// transcript. `try_lock` makes that an explicit 409 rather than a silent queue,
+/// and every endpoint that mutates the agent goes through it.
+macro_rules! lock_agent {
+    ($state:expr) => {
+        match $state.agent.try_lock() {
+            Ok(a) => a,
+            Err(_) => {
+                return (StatusCode::CONFLICT, "a turn is already running").into_response();
+            }
+        }
+    };
+}
+
 async fn chat(State(state): State<AppState>, Json(req): Json<ChatRequest>) -> Response {
     if req.message.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, "message must not be empty").into_response();
     }
-
-    // One turn at a time: a second concurrent turn would interleave into the
-    // same transcript. `try_lock` makes that an explicit 409 rather than a
-    // silent queue.
-    let Ok(mut agent) = state.agent.try_lock() else {
-        return (StatusCode::CONFLICT, "a turn is already running").into_response();
-    };
+    let mut agent = lock_agent!(state);
 
     let cancel = CancellationToken::new();
     *state.cancel.lock().await = Some(cancel.clone());
@@ -100,16 +120,18 @@ async fn chat(State(state): State<AppState>, Json(req): Json<ChatRequest>) -> Re
     }
 }
 
-/// Inject a message into the turn already running. `/chat` answers 409 while a
-/// turn is in flight; this is how the user adds to it instead of waiting.
-async fn steer(State(state): State<AppState>, Json(req): Json<ChatRequest>) -> Response {
-    if req.message.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "message must not be empty").into_response();
-    }
-    // Deliberately does not take the agent lock: the running turn holds it.
-    match state.steer.send(req.message) {
-        Ok(()) => (StatusCode::ACCEPTED, "queued").into_response(),
-        Err(_) => (StatusCode::GONE, "agent is gone").into_response(),
+async fn regenerate(State(state): State<AppState>) -> Response {
+    let mut agent = lock_agent!(state);
+
+    let cancel = CancellationToken::new();
+    *state.cancel.lock().await = Some(cancel.clone());
+    let result = agent.regenerate(cancel).await;
+    *state.cancel.lock().await = None;
+
+    match result {
+        Ok(Some(reply)) => Json(ChatResponse { reply }).into_response(),
+        Ok(None) => (StatusCode::BAD_REQUEST, "nothing to regenerate").into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
     }
 }
 
@@ -123,13 +145,151 @@ async fn abort(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
-async fn sessions(State(state): State<AppState>) -> impl IntoResponse {
-    let current = state.agent.lock().await.session.id.clone();
-    let ids = crate::config::home_dir()
-        .map(|r| crate::session::Session::list(&r))
-        .unwrap_or_default();
-    Json(serde_json::json!({"current": current, "sessions": ids}))
+/// Inject a message into the turn already running. `/api/chat` answers 409 while
+/// a turn is in flight; this is how the user adds to it instead of waiting.
+async fn steer_turn(State(state): State<AppState>, Json(req): Json<ChatRequest>) -> Response {
+    if req.message.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "message must not be empty").into_response();
+    }
+    // Deliberately does not take the agent lock: the running turn holds it.
+    match state.steer.send(req.message) {
+        Ok(()) => (StatusCode::ACCEPTED, "queued").into_response(),
+        Err(_) => (StatusCode::GONE, "agent is gone").into_response(),
+    }
 }
+
+// --- sessions --------------------------------------------------------------
+
+async fn current_state(State(state): State<AppState>) -> Response {
+    let agent = state.agent.lock().await;
+    Json(serde_json::json!({
+        "sessionId": agent.session.id,
+        "model": agent.model_name(),
+        "version": env!("CARGO_PKG_VERSION"),
+    }))
+    .into_response()
+}
+
+async fn list_sessions(State(state): State<AppState>) -> Response {
+    let active = state.agent.lock().await.session.id.clone();
+    Json(serde_json::json!({
+        "active": active,
+        "sessions": Session::list(&state.home),
+    }))
+    .into_response()
+}
+
+async fn create_session(State(state): State<AppState>) -> Response {
+    let mut agent = lock_agent!(state);
+    let id = Session::new_id();
+    match Session::open(&state.home, &id) {
+        Ok(s) => {
+            agent.switch_session(s);
+            Json(serde_json::json!({"id": id})).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
+    }
+}
+
+/// The transcript of any session, flattened for rendering. Reads from disk so a
+/// conversation can be previewed without making it active.
+async fn read_session(State(state): State<AppState>, AxPath(id): AxPath<String>) -> Response {
+    if !Session::exists(&state.home, &id) {
+        return (StatusCode::NOT_FOUND, "no such session").into_response();
+    }
+    match Session::open(&state.home, &id) {
+        Ok(s) => Json(serde_json::json!({
+            "id": s.id,
+            "title": s.display_title(),
+            "messages": dto::transcript(&s.messages),
+        }))
+        .into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
+    }
+}
+
+async fn select_session(State(state): State<AppState>, AxPath(id): AxPath<String>) -> Response {
+    if !Session::exists(&state.home, &id) {
+        return (StatusCode::NOT_FOUND, "no such session").into_response();
+    }
+    // Switching mid-turn would leave the running turn writing into a transcript
+    // the user is no longer looking at, so it waits for the lock like a turn.
+    let mut agent = lock_agent!(state);
+    match Session::open(&state.home, &id) {
+        Ok(s) => {
+            agent.switch_session(s);
+            Json(serde_json::json!({"id": id})).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct RenameRequest {
+    title: String,
+}
+
+async fn rename_session(
+    State(state): State<AppState>,
+    AxPath(id): AxPath<String>,
+    Json(req): Json<RenameRequest>,
+) -> Response {
+    if req.title.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "title must not be empty").into_response();
+    }
+    if !Session::exists(&state.home, &id) {
+        return (StatusCode::NOT_FOUND, "no such session").into_response();
+    }
+    let mut agent = lock_agent!(state);
+
+    // Renaming appends to the transcript, so it must go through whichever
+    // handle owns the file: the live one when it is the active session.
+    let meta = if agent.session.id == id {
+        if let Err(e) = agent.session.set_title(&req.title) {
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response();
+        }
+        agent.session.meta()
+    } else {
+        match Session::open(&state.home, &id) {
+            Ok(mut s) => {
+                if let Err(e) = s.set_title(&req.title) {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response();
+                }
+                s.meta()
+            }
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
+        }
+    };
+    Session::touch_index(&state.home, meta);
+    Json(serde_json::json!({"id": id, "title": req.title})).into_response()
+}
+
+async fn remove_session(State(state): State<AppState>, AxPath(id): AxPath<String>) -> Response {
+    let mut agent = lock_agent!(state);
+
+    if let Err(e) = Session::delete(&state.home, &id) {
+        return (StatusCode::NOT_FOUND, format!("{e:#}")).into_response();
+    }
+
+    // Deleting the conversation on screen has to leave the agent somewhere
+    // valid, so it lands in a fresh one rather than a dangling handle.
+    let mut active = agent.session.id.clone();
+    if active == id {
+        let fresh = Session::new_id();
+        match Session::open(&state.home, &fresh) {
+            Ok(s) => {
+                agent.switch_session(s);
+                active = fresh;
+            }
+            Err(e) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response();
+            }
+        }
+    }
+    Json(serde_json::json!({"deleted": id, "active": active})).into_response()
+}
+
+// --- events ----------------------------------------------------------------
 
 /// Live turn events. Every connected browser sees the same stream, and so does
 /// the REPL if one is attached.
@@ -137,33 +297,26 @@ async fn events_stream(
     State(state): State<AppState>,
 ) -> Sse<impl Stream<Item = Result<sse::Event, Infallible>>> {
     let rx = state.events.subscribe();
-    let stream = async_stream::stream(rx);
-    Sse::new(stream).keep_alive(sse::KeepAlive::default())
+    Sse::new(event_stream(rx)).keep_alive(sse::KeepAlive::default())
 }
 
-/// Turn the broadcast receiver into an SSE stream.
-mod async_stream {
-    use super::*;
-    use futures_util::stream::unfold;
-
-    pub fn stream(
-        rx: broadcast::Receiver<AgentEvent>,
-    ) -> impl Stream<Item = Result<sse::Event, Infallible>> {
-        unfold(rx, |mut rx| async move {
-            loop {
-                match rx.recv().await {
-                    Ok(ev) => {
-                        let (name, data) = encode(&ev);
-                        return Some((Ok(sse::Event::default().event(name).data(data)), rx));
-                    }
-                    // A slow client that fell behind resyncs rather than
-                    // dropping the connection.
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(broadcast::error::RecvError::Closed) => return None,
+fn event_stream(
+    rx: broadcast::Receiver<AgentEvent>,
+) -> impl Stream<Item = Result<sse::Event, Infallible>> {
+    futures_util::stream::unfold(rx, |mut rx| async move {
+        loop {
+            match rx.recv().await {
+                Ok(ev) => {
+                    let (name, data) = encode(&ev);
+                    return Some((Ok(sse::Event::default().event(name).data(data)), rx));
                 }
+                // A slow client that fell behind resyncs rather than dropping
+                // the connection.
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => return None,
             }
-        })
-    }
+        }
+    })
 }
 
 fn encode(ev: &AgentEvent) -> (&'static str, String) {
@@ -197,8 +350,8 @@ fn encode(ev: &AgentEvent) -> (&'static str, String) {
     }
 }
 
-/// SSE frames are newline-delimited, so every payload is JSON-encoded to keep
-/// a multi-line delta from terminating the frame early.
+/// SSE frames are newline-delimited, so every payload is JSON-encoded to keep a
+/// multi-line delta from terminating the frame early.
 fn json_str(s: &str) -> String {
     serde_json::Value::String(s.to_string()).to_string()
 }
@@ -236,12 +389,5 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&data).unwrap();
         assert_eq!(v["input"], 7);
         assert_eq!(v["cacheRead"], 1);
-    }
-
-    #[test]
-    fn the_embedded_ui_is_a_complete_page() {
-        assert!(UI.contains("<title>"));
-        assert!(UI.contains("/events"), "the page must subscribe to the stream");
-        assert!(UI.contains("/chat"));
     }
 }

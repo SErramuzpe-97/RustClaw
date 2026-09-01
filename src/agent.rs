@@ -48,10 +48,12 @@ pub struct Agent {
     steering: mpsc::UnboundedReceiver<String>,
     steer_tx: mpsc::UnboundedSender<String>,
     last_usage: Usage,
+    home: std::path::PathBuf,
 }
 
 impl Agent {
     pub fn new(cfg: Config, session: Session) -> Result<Self> {
+        let home = crate::config::home_dir()?;
         let provider = Provider::new(&cfg.model)?;
         let (events, _) = broadcast::channel(256);
         let (steer_tx, steering) = mpsc::unbounded_channel();
@@ -73,6 +75,7 @@ impl Agent {
             steering,
             steer_tx,
             last_usage: Usage::default(),
+            home,
         })
     }
 
@@ -100,6 +103,27 @@ impl Agent {
         self.ctx.cwd = dir;
     }
 
+    /// Replace the active session. Only one transcript is held in memory, so
+    /// RSS does not grow with the number of saved conversations — which is what
+    /// matters on a machine with 8 GB shared with the GPU.
+    pub fn switch_session(&mut self, session: Session) {
+        self.session = session;
+        // The old counts describe a transcript that is no longer loaded.
+        self.last_usage = Usage::default();
+    }
+
+    pub fn home(&self) -> &std::path::Path {
+        &self.home
+    }
+
+    /// Re-run the last user turn, discarding the answer it produced.
+    pub async fn regenerate(&mut self, cancel: CancellationToken) -> Result<Option<String>> {
+        let Some(prompt) = self.session.rewind_to_last_user()? else {
+            return Ok(None);
+        };
+        self.run_turn(prompt, cancel).await.map(Some)
+    }
+
     pub fn model_name(&self) -> &str {
         self.provider.model_name()
     }
@@ -124,7 +148,14 @@ impl Agent {
     /// only on the success path deadlocked the REPL and left the web UI's form
     /// disabled after any error.
     pub async fn run_turn(&mut self, input: String, cancel: CancellationToken) -> Result<String> {
-        let result = self.drive_turn(input, cancel).await;
+        let untitled = self.session.title.is_none() && self.session.messages.is_empty();
+        let result = self.drive_turn(input.clone(), cancel).await;
+        if untitled {
+            // Derived from the first message rather than asked of the model: a
+            // title is not worth a round trip and tokens.
+            let _ = self.session.set_title(&input);
+        }
+        Session::touch_index(&self.home, self.session.meta());
         self.emit(AgentEvent::TurnEnd { usage: self.last_usage.clone() });
         result
     }
@@ -380,7 +411,7 @@ impl Agent {
 }
 
 /// A short, single-line rendering of tool input for progress display.
-fn summarize_input(input: &serde_json::Value) -> String {
+pub fn summarize_input(input: &serde_json::Value) -> String {
     let s = match input {
         serde_json::Value::Object(map) => map
             .iter()

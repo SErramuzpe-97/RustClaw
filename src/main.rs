@@ -85,12 +85,12 @@ async fn run(cli: Cli) -> Result<()> {
 
         Command::Sessions => {
             let root = config::home_dir()?;
-            let ids = session::Session::list(&root);
-            if ids.is_empty() {
+            let metas = session::Session::list(&root);
+            if metas.is_empty() {
                 println!("no sessions yet");
             }
-            for id in ids {
-                println!("{id}");
+            for m in metas {
+                println!("{:<14} {:>3} msg  {}", m.id, m.messages, m.title);
             }
             Ok(())
         }
