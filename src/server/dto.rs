@@ -102,14 +102,82 @@ fn render(m: &Message) -> Option<UiMessage> {
 
 /// Render a transcript as a Markdown document.
 ///
-/// The assistant already writes Markdown, so its turns are emitted verbatim —
-/// re-escaping them would break the code fences that are the main reason to
-/// export in the first place. Tool activity is folded into detail blocks so the
-/// conversation stays readable without losing what the agent actually ran.
+/// The assistant writes Markdown, and code fences must survive verbatim — that
+/// is the whole reason to export. But the text is attacker-influenced (a
+/// prompt-injected model, or file/web content it echoes), so raw HTML in prose
+/// would run when the file is opened in a Markdown viewer that renders HTML
+/// (VS Code preview, Obsidian, Typora). The fix mirrors what the UI already
+/// does: neutralize HTML tags in prose, leave code untouched. Titles and tool
+/// names are plain strings, so they are escaped whole.
+/// Escape a plain string so no HTML tag or entity in it can render — for a
+/// heading, a tool name, a tool-call summary.
+fn escape_inline(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// Escape `<`, `>` and `&` everywhere in Markdown prose EXCEPT inside fenced
+/// code blocks and inline code spans, so tags in prose become inert text while
+/// code — where `<` is legitimate and common — is preserved byte for byte.
+fn neutralize_prose_html(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 16);
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    let mut in_fence = false; // inside a ``` block
+    let mut in_span = false; // inside a ` inline span
+
+    while i < bytes.len() {
+        // A fence marker only at the start of a line toggles a code block.
+        if !in_span
+            && bytes[i] == b'`'
+            && text[i..].starts_with("```")
+            && (i == 0 || bytes[i - 1] == b'\n')
+        {
+            in_fence = !in_fence;
+            out.push_str("```");
+            i += 3;
+            continue;
+        }
+        if !in_fence && bytes[i] == b'`' {
+            in_span = !in_span;
+            out.push('`');
+            i += 1;
+            continue;
+        }
+        let c = bytes[i];
+        if !in_fence && !in_span {
+            match c {
+                b'&' => {
+                    out.push_str("&amp;");
+                    i += 1;
+                    continue;
+                }
+                b'<' => {
+                    out.push_str("&lt;");
+                    i += 1;
+                    continue;
+                }
+                b'>' => {
+                    out.push_str("&gt;");
+                    i += 1;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        // Advance one UTF-8 char so multi-byte text is copied intact.
+        let ch = text[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
 pub fn to_markdown(title: &str, messages: &[Message]) -> String {
     let mut out = String::with_capacity(messages.len() * 256);
     out.push_str("# ");
-    out.push_str(title);
+    out.push_str(&escape_inline(title));
     out.push_str("\n\n");
 
     for m in messages {
@@ -136,12 +204,12 @@ pub fn to_markdown(title: &str, messages: &[Message]) -> String {
                 }
                 out.push_str("## Assistant\n\n");
                 if !text.trim().is_empty() {
-                    out.push_str(text.trim());
+                    out.push_str(neutralize_prose_html(text.trim()).trim());
                     out.push_str("\n\n");
                 }
                 for c in calls {
                     out.push_str("> ran ");
-                    out.push_str(&c);
+                    out.push_str(&escape_inline(&c));
                     out.push('\n');
                 }
                 if let Some(e) = error {
@@ -155,8 +223,9 @@ pub fn to_markdown(title: &str, messages: &[Message]) -> String {
             }
             Message::ToolResult { tool_name, content, is_error, .. } => {
                 out.push_str(&format!(
-                    "<details><summary>{} {tool_name}</summary>\n\n```\n{}\n```\n\n</details>\n\n",
+                    "<details><summary>{} {}</summary>\n\n```\n{}\n```\n\n</details>\n\n",
                     if *is_error { "error from" } else { "output of" },
+                    escape_inline(tool_name),
                     // A fence inside the output would end the block early.
                     content.replace("```", "\u{200b}`\u{200b}`\u{200b}`").trim_end(),
                 ));
@@ -247,16 +316,53 @@ mod tests {
     }
 
     #[test]
-    fn markdown_export_keeps_assistant_prose_verbatim() {
+    fn markdown_export_keeps_code_fences_verbatim() {
         // The whole point of exporting is to get the model's Markdown back;
-        // escaping it would destroy the code fences.
+        // touching code would destroy the fences.
         let md = to_markdown("Notas", &[
             Message::user("hazme un ejemplo"),
-            assistant(vec![ContentBlock::text("Aquí va:\n\n```rust\nfn main() {}\n```")]),
+            assistant(vec![ContentBlock::text("Aquí va:\n\n```rust\nfn main() { let x: Vec<u8> = vec![]; }\n```")]),
         ]);
-        assert!(md.starts_with("# Notas\n\n"));
         assert!(md.contains("## You\n\nhazme un ejemplo"));
-        assert!(md.contains("```rust\nfn main() {}\n```"), "fence mangled:\n{md}");
+        // Generic type args inside the fence — `<u8>` — must survive untouched.
+        assert!(md.contains("Vec<u8>"), "code was escaped:\n{md}");
+        assert!(md.contains("```rust\n"), "fence mangled:\n{md}");
+    }
+
+    #[test]
+    fn export_neutralizes_raw_html_in_a_title() {
+        // Opened in a Markdown viewer that renders HTML, an un-escaped title
+        // would run this.
+        let md = to_markdown("Notes <img src=x onerror=alert(9)> <script>alert(8)</script>", &[]);
+        assert!(!md.contains("<script"), "raw script tag in export:\n{md}");
+        assert!(!md.contains("<img"), "raw img tag in export:\n{md}");
+        assert!(md.contains("&lt;script&gt;"), "expected escaped text:\n{md}");
+    }
+
+    #[test]
+    fn export_neutralizes_raw_html_in_assistant_prose_but_not_in_code() {
+        let md = to_markdown("t", &[assistant(vec![ContentBlock::text(
+            "Mira esto <script>alert(1)</script> y en linea `<b>x</b>` y en bloque:\n\n```html\n<script>ok</script>\n```",
+        )])]);
+        // Prose tag: neutralized.
+        assert!(!md.contains("<script>alert(1)"), "prose HTML ran:\n{md}");
+        assert!(md.contains("&lt;script&gt;alert(1)"), "{md}");
+        // Inline code span: preserved.
+        assert!(md.contains("`<b>x</b>`"), "inline code escaped:\n{md}");
+        // Fenced code: preserved verbatim, including its <script>.
+        assert!(md.contains("```html\n<script>ok</script>\n```"), "fenced code escaped:\n{md}");
+    }
+
+    #[test]
+    fn export_neutralizes_a_hostile_tool_name() {
+        let md = to_markdown("t", &[Message::ToolResult {
+            tool_call_id: "c".into(),
+            tool_name: "exec<script>alert(1)</script>".into(),
+            content: "ok".into(),
+            is_error: false,
+            blob: None,
+        }]);
+        assert!(!md.contains("<script>alert"), "tool name ran:\n{md}");
     }
 
     #[test]

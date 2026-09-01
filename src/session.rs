@@ -53,9 +53,23 @@ pub struct Session {
     log: std::fs::File,
 }
 
+/// Whether `id` is a well-formed session id.
+///
+/// Ids are minted by `new_id` as `s<digits>`, but they arrive from the network
+/// as free-form path parameters. Anything outside this set — a slash, a dot, a
+/// percent-escape that decoded to one — could escape the sessions directory and
+/// read or delete arbitrary `.jsonl` files, so it is rejected at every boundary
+/// rather than trusted because the id "should" be clean.
+pub fn is_valid_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
 impl Session {
     /// Open `id`, replaying its transcript if one exists.
     pub fn open(root: &Path, id: &str) -> Result<Self> {
+        anyhow::ensure!(is_valid_id(id), "invalid session id");
         let dir = root.join("sessions");
         std::fs::create_dir_all(dir.join("tool-results"))
             .with_context(|| format!("creating {}", dir.display()))?;
@@ -244,6 +258,7 @@ impl Session {
 
     /// Remove a transcript and the tool output spilled for it.
     pub fn delete(root: &Path, id: &str) -> Result<()> {
+        anyhow::ensure!(is_valid_id(id), "invalid session id");
         let dir = root.join("sessions");
         let path = dir.join(format!("{id}.jsonl"));
         if !path.exists() {
@@ -269,7 +284,9 @@ impl Session {
     }
 
     pub fn exists(root: &Path, id: &str) -> bool {
-        root.join("sessions").join(format!("{id}.jsonl")).exists()
+        // A malformed id is treated as non-existent, so callers that gate on
+        // exists() reject a traversal attempt before touching the filesystem.
+        is_valid_id(id) && root.join("sessions").join(format!("{id}.jsonl")).exists()
     }
 }
 
@@ -612,6 +629,28 @@ mod tests {
         let r = root("rewind-empty");
         let mut s = Session::open(&r, "s1").unwrap();
         assert_eq!(s.rewind_to_last_user().unwrap(), None);
+    }
+
+    #[test]
+    fn traversal_ids_are_rejected_at_every_boundary() {
+        for bad in ["../victima/notas", "..", "a/b", "a.jsonl", "", "a b",
+                    "../../etc/passwd", "a\\b", &"x".repeat(200)] {
+            assert!(!is_valid_id(bad), "{bad:?} must be rejected");
+        }
+        for ok in ["s1788269019", "abc", "a-b_c", "S1"] {
+            assert!(is_valid_id(ok), "{ok:?} must be accepted");
+        }
+
+        // And the filesystem-touching entry points must refuse them.
+        let r = root("traversal");
+        std::fs::create_dir_all(r.join("victima")).unwrap();
+        std::fs::write(r.join("victima/notas.jsonl"), "{\"type\":\"Title\",\"text\":\"x\"}\n").unwrap();
+
+        assert!(Session::open(&r, "../victima/notas").is_err());
+        assert!(!Session::exists(&r, "../victima/notas"));
+        assert!(Session::delete(&r, "../victima/notas").is_err());
+        // The out-of-tree file was never touched.
+        assert!(r.join("victima/notas.jsonl").exists(), "traversal must not reach it");
     }
 
     #[test]

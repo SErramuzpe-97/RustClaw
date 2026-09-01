@@ -13,7 +13,7 @@ mod dto;
 pub use auth::generate as generate_token;
 
 use crate::agent::{Agent, AgentEvent};
-use crate::session::Session;
+use crate::session::{Session, is_valid_id};
 use anyhow::{Context, Result};
 use axum::extract::{Path as AxPath, State};
 use axum::http::{StatusCode, header};
@@ -317,6 +317,9 @@ async fn rename_session(
 }
 
 async fn remove_session(State(state): State<AppState>, AxPath(id): AxPath<String>) -> Response {
+    if !is_valid_id(&id) {
+        return (StatusCode::BAD_REQUEST, "invalid session id").into_response();
+    }
     let mut agent = lock_agent!(state);
 
     if let Err(e) = Session::delete(&state.home, &id) {
