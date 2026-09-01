@@ -52,6 +52,14 @@ enum Command {
     },
     /// List stored sessions.
     Sessions,
+    /// Print the access token, creating one if there is none.
+    ///
+    /// Required before the server may listen on anything but loopback.
+    Token {
+        /// Replace the existing token instead of printing it.
+        #[arg(long)]
+        rotate: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -80,6 +88,47 @@ async fn run(cli: Cli) -> Result<()> {
             let cfg = config::Config::load()?;
             println!("# {}\n", path.display());
             print!("{}", toml::to_string_pretty(&cfg)?);
+            Ok(())
+        }
+
+        Command::Token { rotate } => {
+            let path = config::home_dir()?.join("secrets.env");
+            let existing = std::fs::read_to_string(&path).unwrap_or_default();
+            let current = existing.lines().find_map(|l| {
+                l.trim()
+                    .strip_prefix("export RUSTCLAW_TOKEN=")
+                    .map(|v| v.trim_matches('"').to_string())
+            });
+
+            let token = match (&current, rotate) {
+                (Some(t), false) => t.clone(),
+                _ => {
+                    let fresh = server::generate_token()?;
+                    // Rewrite the file without the old line, then append.
+                    let kept: Vec<&str> = existing
+                        .lines()
+                        .filter(|l| !l.trim().starts_with("export RUSTCLAW_TOKEN="))
+                        .collect();
+                    let mut body = kept.join("\n");
+                    if !body.is_empty() && !body.ends_with('\n') {
+                        body.push('\n');
+                    }
+                    body.push_str(&format!("export RUSTCLAW_TOKEN=\"{fresh}\"\n"));
+                    if let Some(parent) = path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&path, body)?;
+                    // The file holds API keys too; keep it owner-only.
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+                    }
+                    fresh
+                }
+            };
+            println!("{token}");
+            eprintln!("stored in {}", path.display());
             Ok(())
         }
 

@@ -162,7 +162,10 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [usage, setUsage] = useState(null);
   const [meta, setMeta] = useState({ model: "", version: "" });
-  const [sidebar, setSidebar] = useState(true);
+  // On a phone the sidebar is an overlay, so starting it open would cover the
+  // conversation the link was opened to read.
+  const narrow = () => typeof window !== "undefined" && window.innerWidth <= 720;
+  const [sidebar, setSidebar] = useState(() => !narrow());
   const [theme, setTheme] = useState(() => localStorage.getItem("rustclaw-theme") || "system");
   const [atBottom, setAtBottom] = useState(true);
   const logRef = useRef(null);
@@ -295,6 +298,7 @@ function App() {
     try {
       const d = await api("/sessions", { method: "POST" });
       setItems([]); setUsage(null); setActive(d.id);
+      if (narrow()) setSidebar(false);
       refreshConvos();
     } catch (e) { pushNotice(setItems, String(e), true); }
   };
@@ -305,6 +309,7 @@ function App() {
       await api(`/sessions/${id}/select`, { method: "POST" });
       await loadConvo(id);
       setUsage(null);
+      if (narrow()) setSidebar(false);
     } catch (e) { pushNotice(setItems, String(e), true); }
   };
 
@@ -330,6 +335,7 @@ function App() {
       <${Sidebar} collapsed=${!sidebar} convos=${convos} active=${active}
         onNew=${newChat} onSelect=${selectConvo} onRename=${rename} onDelete=${remove}
         theme=${theme} setTheme=${setTheme} meta=${meta} />
+      ${sidebar && html`<div class="scrim" onClick=${() => setSidebar(false)} />`}
       <div class="main">
         <div class="topbar">
           <button class="icon-btn" onClick=${() => setSidebar((s) => !s)} title="Toggle sidebar">

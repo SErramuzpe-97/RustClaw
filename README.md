@@ -99,6 +99,21 @@ or Claude.ai subscription login is not an API credential and will not work here.
 allowed_chat_ids = [123456789]   # empty means anyone
 ```
 
+## Reaching it from another device
+
+The server refuses to bind a non-loopback address without a token — reaching it
+means running shell commands on the host, so this is enforced, not advised:
+
+```bash
+rustclaw token                       # generates one into ~/.rustclaw/secrets.env
+# then set server.bind to the address you want, e.g. your Tailscale IP
+```
+
+Open `http://<address>:8080/?token=<token>` once; the token is exchanged for a
+cookie so the link can be bookmarked. Scripts can send `Authorization: Bearer`.
+Prefer a Tailscale address over `0.0.0.0`: it is reachable from your tailnet and
+nothing else.
+
 ## Exporting
 
 Any conversation downloads as Markdown from the sidebar or the toolbar, or via

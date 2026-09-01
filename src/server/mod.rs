@@ -7,7 +7,10 @@
 //! nothing to install on the device.
 
 mod assets;
+mod auth;
 mod dto;
+
+pub use auth::generate as generate_token;
 
 use crate::agent::{Agent, AgentEvent};
 use crate::session::Session;
@@ -37,10 +40,24 @@ struct AppState {
 }
 
 pub async fn run(agent: Agent) -> Result<()> {
-    let bind = {
+    let (host, port) = {
         let c = agent.server_config();
-        format!("{}:{}", c.bind, c.port)
+        (c.bind.clone(), c.port)
     };
+    let bind = format!("{host}:{port}");
+
+    // Reaching this server means running shell commands on this machine, so
+    // listening anywhere a stranger could reach requires a token. Refusing to
+    // start is the only safe default: a warning would be ignored.
+    let token = std::env::var("RUSTCLAW_TOKEN").ok().filter(|t| !t.is_empty());
+    if !auth::is_loopback(&host) && token.is_none() {
+        anyhow::bail!(
+            "refusing to serve on {host}: it is reachable from other machines and \
+             RUSTCLAW_TOKEN is not set.\n\n  Generate one with:  rustclaw token\n\n\
+             Then reconnect, or set server.bind = \"127.0.0.1\" to stay local-only."
+        );
+    }
+    let guard = auth::Auth::new(token.clone());
     let home = agent.home().to_path_buf();
     let events = agent.subscribe_sender();
     let steer = agent.steer_sender();
@@ -66,12 +83,19 @@ pub async fn run(agent: Agent) -> Result<()> {
         .route("/api/sessions/{id}", delete(remove_session))
         .route("/api/sessions/{id}/select", post(select_session))
         .route("/api/sessions/{id}/export", get(export_session))
+        .layer(axum::middleware::from_fn_with_state(guard.clone(), auth::guard))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&bind)
         .await
         .with_context(|| format!("binding {bind}"))?;
-    println!("rustclaw: http://{bind}");
+    if guard.required() {
+        let t = token.as_deref().unwrap_or_default();
+        println!("rustclaw: http://{bind}/?token={t}");
+        println!("rustclaw: token required — that link sets a cookie, then bookmark it");
+    } else {
+        println!("rustclaw: http://{bind}");
+    }
     axum::serve(listener, app).await.context("http server")?;
     Ok(())
 }

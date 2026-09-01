@@ -254,7 +254,24 @@ a.icon-btn { text-decoration: none; }
   box-shadow: 0 2px 8px rgb(0 0 0 / .12);
 }
 
+/* The scrim only exists while the sidebar is an overlay. */
+.scrim { display: none; }
+
 @media (max-width: 720px) {
-  .sidebar { position: absolute; z-index: 10; height: 100%; }
-  .sidebar.collapsed { margin-left: calc(var(--sidebar-w) * -1); }
+  .sidebar {
+    position: absolute; z-index: 10; height: 100%;
+    box-shadow: 0 0 24px rgb(0 0 0 / .25);
+  }
+  .sidebar.collapsed { margin-left: calc(var(--sidebar-w) * -1); box-shadow: none; }
+  .scrim { display: block; position: absolute; inset: 0; z-index: 5; background: rgb(0 0 0 / .35); }
+
+  /* Thumb-reachable targets and a full-width reading column. */
+  .log-inner { padding: 1rem .75rem 1.5rem; }
+  .turn.user .bubble { max-width: 100%; }
+  .composer-wrap { padding: 0 .5rem .5rem; }
+  .convo { padding: .7rem .6rem; }
+  .convo-actions { display: flex; }        /* no hover on touch */
+  .turn-actions { opacity: 1; }
+  .hint { display: none; }                  /* no keyboard shortcuts on a phone */
+  .topbar-title { font-size: .9rem; }
 }

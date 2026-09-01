@@ -75,7 +75,14 @@ port() {
   echo "${p:-8080}"
 }
 PORT="$(port)"
-URL="http://127.0.0.1:$PORT"
+# Follow whatever the config binds to: a Tailscale address is not reachable on
+# 127.0.0.1, so hardcoding loopback would open a dead page.
+HOST=$(sed -n 's/^[[:space:]]*bind[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+        "$HOME_DIR/config.toml" 2>/dev/null | tail -1)
+[ -z "$HOST" ] || [ "$HOST" = "0.0.0.0" ] && HOST=127.0.0.1
+URL="http://$HOST:$PORT"
+# A token-protected server answers 401 without it, so the opened link carries it.
+[ -n "${RUSTCLAW_TOKEN:-}" ] && OPEN_URL="$URL/?token=$RUSTCLAW_TOKEN" || OPEN_URL="$URL"
 
 note() {  # the app has no window, so problems have to reach the user somehow
   /usr/bin/osascript -e "display notification \"$1\" with title \"RustClaw\"" >/dev/null 2>&1
@@ -87,8 +94,8 @@ fi
 
 # Already serving? Just focus it — double-clicking twice must not start a second
 # process fighting for the same port.
-if /usr/bin/curl -fsS -m 2 -o /dev/null "$URL/" 2>/dev/null; then
-  /usr/bin/open "$URL"
+if /usr/bin/curl -fsS -m 2 -o /dev/null "$OPEN_URL" 2>/dev/null; then
+  /usr/bin/open "$OPEN_URL"
   exit 0
 fi
 
@@ -96,8 +103,8 @@ fi
 SERVER=$!
 
 for _ in $(seq 1 40); do
-  if /usr/bin/curl -fsS -m 1 -o /dev/null "$URL/" 2>/dev/null; then
-    /usr/bin/open "$URL"
+  if /usr/bin/curl -fsS -m 1 -o /dev/null "$OPEN_URL" 2>/dev/null; then
+    /usr/bin/open "$OPEN_URL"
     wait "$SERVER"
     exit $?
   fi
