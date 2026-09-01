@@ -30,6 +30,9 @@ pub struct Request<'a> {
     /// `None` omits the parameter. Required for current Anthropic models,
     /// which reject any sampling parameter.
     pub temperature: Option<f32>,
+    /// Request usage accounting in the stream. Ignored by the Anthropic
+    /// backend, which always reports usage.
+    pub stream_usage: bool,
 }
 
 /// Sink for streaming deltas. A plain `FnMut` rather than a trait object: the

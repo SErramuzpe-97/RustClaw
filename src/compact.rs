@@ -96,6 +96,7 @@ pub async fn generate_summary(provider: &Provider, messages: &[Message]) -> Resu
                 // A summary is a factual record, not prose, so pin sampling
                 // low where the backend accepts it at all.
                 temperature: None,
+                stream_usage: false,
             },
             &mut sink,
         )

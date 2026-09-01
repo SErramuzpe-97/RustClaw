@@ -28,6 +28,11 @@ pub struct ModelConfig {
     /// the normal case for a local llama.cpp or ollama server.
     pub api_key_env: String,
     pub max_tokens: u32,
+    /// Ask an OpenAI-compatible server to report token usage in the stream.
+    /// Standard on OpenAI; not every compatible server accepts the field, and
+    /// a strict one answers 400/422. Turn it off there — RustClaw falls back
+    /// to the chars/4 estimate.
+    pub stream_usage: bool,
     pub context_window: u32,
     /// Omitted from the request when unset. Leave it unset for Anthropic:
     /// Opus 5, Sonnet 5 and the 4.6+ family removed sampling parameters and
@@ -46,6 +51,7 @@ impl Default for ModelConfig {
             model: "qwen2.5:3b".into(),
             api_key_env: String::new(),
             max_tokens: 4096,
+            stream_usage: true,
             context_window: 32_768,
             temperature: None,
         }

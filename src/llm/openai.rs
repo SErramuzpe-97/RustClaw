@@ -66,10 +66,12 @@ impl Client {
             "messages": messages,
             "max_tokens": req.max_tokens,
             "stream": true,
-            // Not every OpenAI-compatible server honours this, but the ones
-            // that do give us exact token counts instead of the chars/4 guess.
-            "stream_options": {"include_usage": true},
         });
+        // Servers that honour this give exact token counts instead of the
+        // chars/4 guess; strict ones reject the unknown field outright.
+        if req.stream_usage {
+            body["stream_options"] = json!({"include_usage": true});
+        }
         if let Some(t) = req.temperature {
             body["temperature"] = json!(t);
         }
@@ -81,9 +83,12 @@ impl Client {
 
     async fn consume(&self, resp: reqwest::Response, sink: EventSink<'_>) -> Result<()> {
         let mut stream = resp.bytes_stream().eventsource();
-        // Tool calls stream as fragments keyed by index; the name arrives once
-        // and the arguments dribble in as JSON text.
-        let mut open_tool: Option<u64> = None;
+        // Tool calls stream as fragments: the name arrives once and the
+        // arguments dribble in as JSON text. OpenAI keys the fragments by
+        // `index`; Mistral and some other compatible servers send only an `id`,
+        // or one whole call per delta. Track both so two parallel calls are not
+        // concatenated into one when `index` is absent.
+        let mut open_tool: Option<(u64, Option<String>)> = None;
         let mut stop = StopReason::Stop;
 
         while let Some(event) = stream.next().await {
@@ -133,23 +138,36 @@ impl Client {
                 if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
                     for call in calls {
                         let index = call.get("index").and_then(Value::as_u64).unwrap_or(0);
-                        if open_tool != Some(index) {
+                        let id = call.get("id").and_then(Value::as_str).map(str::to_string);
+                        let name = call
+                            .get("function")
+                            .and_then(|f| f.get("name"))
+                            .and_then(Value::as_str)
+                            .filter(|n| !n.is_empty())
+                            .map(str::to_string);
+
+                        // A fragment opens a new call when its index moves, when
+                        // it carries a different id, or when it names a function
+                        // while one is already open (a server that sends one
+                        // complete call per delta and no index at all).
+                        let starts_new = match &open_tool {
+                            None => true,
+                            Some((open_index, open_id)) => {
+                                *open_index != index
+                                    || (id.is_some() && id != *open_id)
+                                    || (id.is_none() && name.is_some())
+                            }
+                        };
+
+                        if starts_new {
                             if open_tool.is_some() {
                                 sink(StreamEvent::ToolCallEnd);
                             }
-                            let name = call
-                                .get("function")
-                                .and_then(|f| f.get("name"))
-                                .and_then(Value::as_str)
-                                .unwrap_or_default()
-                                .to_string();
-                            let id = call
-                                .get("id")
-                                .and_then(Value::as_str)
-                                .map(str::to_string)
-                                .unwrap_or_else(|| format!("call_{index}"));
-                            sink(StreamEvent::ToolCallStart { id, name });
-                            open_tool = Some(index);
+                            sink(StreamEvent::ToolCallStart {
+                                id: id.clone().unwrap_or_else(|| format!("call_{index}")),
+                                name: name.unwrap_or_default(),
+                            });
+                            open_tool = Some((index, id));
                         }
                         if let Some(args) = call
                             .get("function")
@@ -317,12 +335,35 @@ mod tests {
             tools: &[],
             max_tokens: 100,
             temperature,
+            stream_usage: true,
         };
         assert!(client.build_body(&req(None)).get("temperature").is_none());
         // f32 -> f64 widening makes an exact compare brittle; the point is
         // that the field is present and carries the value.
         let sent = client.build_body(&req(Some(0.5)));
         assert!((sent["temperature"].as_f64().unwrap() - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn stream_options_is_sent_only_when_enabled() {
+        let client = Client {
+            http: reqwest::Client::new(),
+            base_url: "http://localhost/v1".into(),
+            model: "m".into(),
+            api_key: None,
+        };
+        let msgs = [Message::user("hi")];
+        let req = |stream_usage| Request {
+            system: "s",
+            messages: &msgs,
+            tools: &[],
+            max_tokens: 100,
+            temperature: None,
+            stream_usage,
+        };
+        assert!(client.build_body(&req(true)).get("stream_options").is_some());
+        // A strict server answers 400/422 on the unknown field.
+        assert!(client.build_body(&req(false)).get("stream_options").is_none());
     }
 
     #[test]

@@ -93,6 +93,13 @@ impl Agent {
         self.events.clone()
     }
 
+    /// Point tool execution at a specific directory. Defaults to the process
+    /// working directory. Only the tests need this today.
+    #[cfg(test)]
+    pub fn set_cwd(&mut self, dir: std::path::PathBuf) {
+        self.ctx.cwd = dir;
+    }
+
     pub fn model_name(&self) -> &str {
         self.provider.model_name()
     }
@@ -238,6 +245,7 @@ impl Agent {
                 tools: &self.schemas,
                 max_tokens: self.cfg.model.max_tokens,
                 temperature: self.cfg.model.temperature,
+                stream_usage: self.cfg.model.stream_usage,
             };
 
             tokio::select! {

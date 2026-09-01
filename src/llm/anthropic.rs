@@ -360,6 +360,7 @@ mod tests {
             tools: &[],
             max_tokens: 100,
             temperature,
+            stream_usage: true,
         })
     }
 

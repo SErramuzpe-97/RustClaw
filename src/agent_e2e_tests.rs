@@ -307,6 +307,91 @@ async fn a_cancelled_turn_stops_before_running_the_tool() {
     assert!(!ran_tool, "a cancelled turn must not execute tools");
 }
 
+#[tokio::test]
+async fn two_parallel_tool_calls_are_kept_apart_when_the_server_omits_index() {
+    // Mistral and some other OpenAI-compatible servers stream one complete
+    // tool call per delta with no `index`. Keying only on index would append
+    // the second call's arguments to the first and lose one of them.
+    let call = [
+        frame(r#"{"choices":[{"delta":{"tool_calls":[{"id":"a1","function":{"name":"read","arguments":"{\"path\":\"one.txt\"}"}}]}}]}"#),
+        frame(r#"{"choices":[{"delta":{"tool_calls":[{"id":"b2","function":{"name":"read","arguments":"{\"path\":\"two.txt\"}"}}]}}]}"#),
+        frame(r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#),
+        "data: [DONE]\n\n".to_string(),
+    ];
+    let answer = [
+        frame(r#"{"choices":[{"delta":{"content":"read both"}}]}"#),
+        frame(r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#),
+        "data: [DONE]\n\n".to_string(),
+    ];
+    let stub = StubModel::start(vec![
+        call.iter().map(|s| leak(s)).collect(),
+        answer.iter().map(|s| leak(s)).collect(),
+    ])
+    .await;
+    let (mut agent, root) = agent_for("noindex", stub.port).await;
+    std::fs::write(root.join("one.txt"), "FIRST").unwrap();
+    std::fs::write(root.join("two.txt"), "SECOND").unwrap();
+    agent.set_cwd(root.clone());
+
+    agent.run_turn("read both files".into(), CancellationToken::new()).await.unwrap();
+
+    let results: Vec<_> = agent
+        .session
+        .messages
+        .iter()
+        .filter_map(|m| match m {
+            Message::ToolResult { tool_call_id, content, .. } => Some((tool_call_id, content)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.len(), 2, "both calls must survive: {results:#?}");
+    assert_eq!(results[0].0, "a1");
+    assert_eq!(results[1].0, "b2");
+    assert!(results[0].1.contains("FIRST"), "{:?}", results[0].1);
+    assert!(results[1].1.contains("SECOND"), "{:?}", results[1].1);
+}
+
+#[tokio::test]
+async fn openai_style_indexed_fragments_still_assemble_into_one_call() {
+    // The other shape: one call split across fragments that repeat the index
+    // and carry the id only on the first.
+    let call = [
+        frame(r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"exec","arguments":""}}]}}]}"#),
+        frame(r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"command\":"}}]}}]}"#),
+        frame(r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":" \"echo one\"}"}}]}}]}"#),
+        frame(r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#),
+        "data: [DONE]\n\n".to_string(),
+    ];
+    let answer = [
+        frame(r#"{"choices":[{"delta":{"content":"done"}}]}"#),
+        frame(r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#),
+        "data: [DONE]\n\n".to_string(),
+    ];
+    let stub = StubModel::start(vec![
+        call.iter().map(|s| leak(s)).collect(),
+        answer.iter().map(|s| leak(s)).collect(),
+    ])
+    .await;
+    let (mut agent, _root) = agent_for("indexed", stub.port).await;
+
+    agent.run_turn("go".into(), CancellationToken::new()).await.unwrap();
+
+    let results: Vec<_> = agent
+        .session
+        .messages
+        .iter()
+        .filter(|m| matches!(m, Message::ToolResult { .. }))
+        .collect();
+    assert_eq!(results.len(), 1, "fragments of one call must not split: {results:#?}");
+    match results[0] {
+        Message::ToolResult { content, is_error, .. } => {
+            assert!(!is_error, "{content}");
+            assert!(content.contains("one"), "{content}");
+        }
+        _ => unreachable!(),
+    }
+}
+
 /// The stub server needs `&'static str` frames; the scripts are built per test
 /// and live for the process, which is fine in a test binary.
 fn leak(s: &str) -> &'static str {
