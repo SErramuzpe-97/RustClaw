@@ -103,8 +103,11 @@ button:disabled { cursor: default; opacity: .4; }
 }
 .convo-actions { display: none; gap: .1rem; }
 .convo:hover .convo-actions, .convo.active .convo-actions { display: flex; }
-.convo-actions button { padding: .15rem .3rem; border-radius: 5px; color: var(--fg-faint); }
-.convo-actions button:hover { background: var(--bg); color: var(--fg); }
+.convo-actions button, .convo-actions a {
+  padding: .15rem .3rem; border-radius: 5px; color: var(--fg-faint);
+  display: inline-flex; align-items: center;
+}
+.convo-actions button:hover, .convo-actions a:hover { background: var(--bg); color: var(--fg); }
 .convo input {
   flex: 1; font: inherit; background: var(--bg); color: var(--fg);
   border: 1px solid var(--accent); border-radius: 5px; padding: .15rem .3rem; min-width: 0;
@@ -128,6 +131,7 @@ button:disabled { cursor: default; opacity: .4; }
   display: inline-flex; align-items: center;
 }
 .icon-btn:hover { background: var(--bg-raised); color: var(--fg); }
+a.icon-btn { text-decoration: none; }
 .topbar-title {
   flex: 1; font-size: .95rem; font-weight: 550;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

@@ -140,6 +140,7 @@ const I = {
   down: "M12 5v14M5 12l7 7 7-7",
   sun: "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8M12 2v2M12 20v2M5 5l1.5 1.5M17.5 17.5 19 19M2 12h2M20 12h2M5 19l1.5-1.5M17.5 6.5 19 5",
   moon: "M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8",
+  download: "M12 3v12M7 11l5 5 5-5M5 21h14",
 };
 
 // --- api --------------------------------------------------------------------
@@ -165,7 +166,6 @@ function App() {
   const [theme, setTheme] = useState(() => localStorage.getItem("rustclaw-theme") || "system");
   const [atBottom, setAtBottom] = useState(true);
   const logRef = useRef(null);
-  const streamRef = useRef(null);              // index of the streaming bubble
 
   useEffect(() => {
     const root = document.documentElement;
@@ -214,14 +214,22 @@ function App() {
 
     on("turn_start", () => {
       setBusy(true);
-      setItems((prev) => { streamRef.current = prev.length; return [...prev, blank()]; });
+      setItems(closeOpen);
     });
-    on("delta", (t) => setItems((prev) => appendText(prev, streamRef.current, t)));
-    on("tool_start", ({ name, input }) => setItems((prev) => {
-      const next = [...prev, { kind: "tool", name, input, running: true }];
-      streamRef.current = null;   // text after a tool starts a new bubble
-      return next;
+    // The bubble being streamed into is the last item when it is an open
+    // assistant turn. Deriving that from state rather than from a ref is what
+    // keeps it correct: an index held in a ref went stale the moment a tool
+    // call pushed an item, and every later delta then started its own bubble —
+    // which split code spans across bubbles and rendered their backticks raw.
+    on("delta", (t) => setItems((prev) => {
+      const last = prev[prev.length - 1];
+      if (last && last.kind === "assistant" && last.open) {
+        return [...prev.slice(0, -1), { ...last, text: last.text + t }];
+      }
+      return [...prev, { kind: "assistant", text: t, open: true }];
     }));
+    on("tool_start", ({ name, input }) =>
+      setItems((prev) => [...closeOpen(prev), { kind: "tool", name, input, running: true }]));
     on("tool_end", ({ name, isError, preview }) => setItems((prev) => {
       const next = [...prev];
       for (let i = next.length - 1; i >= 0; i--) {
@@ -234,12 +242,12 @@ function App() {
     }));
     on("compacted", ({ dropped }) => setItems((prev) =>
       [...prev, { kind: "notice", text: `Context compacted — ${dropped} messages summarized` }]));
-    on("error", (msg) => { streamRef.current = null; pushNotice(setItems, msg, true); });
+    on("error", (msg) => { setItems(closeOpen); pushNotice(setItems, msg, true); });
     on("turn_end", (u) => {
-      streamRef.current = null;
       setBusy(false);
       setUsage(u.input || u.output ? u : null);
-      setItems((prev) => prev.filter((it) => !(it.kind === "assistant" && !it.text)));
+      setItems((prev) =>
+        closeOpen(prev).filter((it) => !(it.kind === "assistant" && !it.text.trim())));
       refreshConvos();
     });
     return () => es.close();
@@ -329,6 +337,11 @@ function App() {
           </button>
           <div class="topbar-title">${title}</div>
           ${usage && html`<span class="notice">${usage.input} in / ${usage.output} out</span>`}
+          ${active && html`
+            <a class="icon-btn" href=${`/api/sessions/${active}/export`} download
+               title="Export this conversation as Markdown">
+              <${Icon} d=${I.download} size=${16} />
+            </a>`}
         </div>
 
         <div class="log" ref=${logRef} onScroll=${onScroll}>
@@ -387,6 +400,10 @@ function Sidebar({ collapsed, convos, active, onNew, onSelect, onRename, onDelet
                           onClick=${(e) => { e.stopPropagation(); setEditing(c.id); }}>
                     <${Icon} d=${I.pencil} size=${13} />
                   </button>
+                  <a title="Export as Markdown" href=${`/api/sessions/${c.id}/export`} download
+                     onClick=${(e) => e.stopPropagation()}>
+                    <${Icon} d=${I.download} size=${13} />
+                  </a>
                   <button title="Delete"
                           onClick=${(e) => { e.stopPropagation();
                             if (confirm(`Delete "${c.title}"?`)) onDelete(c.id); }}>
@@ -428,7 +445,7 @@ function Item({ item, last, busy, onRegenerate }) {
       setCopied(true); setTimeout(() => setCopied(false), 1400);
     } catch { /* ignore */ }
   };
-  const streaming = last && busy;
+  const streaming = busy && item.open;
   return html`
     <div class="turn assistant">
       <div class=${"bubble" + (streaming ? " cursor" : "")}><${Rich} text=${item.text} /></div>
@@ -482,15 +499,9 @@ function Composer({ busy, onSend, onStop }) {
 
 // --- helpers ----------------------------------------------------------------
 
-const blank = () => ({ kind: "assistant", text: "" });
-
-function appendText(prev, idx, t) {
-  const next = [...prev];
-  if (idx == null || !next[idx] || next[idx].kind !== "assistant") {
-    return [...next, { kind: "assistant", text: t }];
-  }
-  next[idx] = { ...next[idx], text: next[idx].text + t };
-  return next;
+/// Mark every assistant bubble finished, so the next delta opens a new one.
+function closeOpen(items) {
+  return items.map((it) => (it.kind === "assistant" && it.open ? { ...it, open: false } : it));
 }
 
 function pushNotice(setItems, text, isError = false) {

@@ -13,7 +13,7 @@ use crate::agent::{Agent, AgentEvent};
 use crate::session::Session;
 use anyhow::{Context, Result};
 use axum::extract::{Path as AxPath, State};
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response, Sse, sse};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -65,6 +65,7 @@ pub async fn run(agent: Agent) -> Result<()> {
         .route("/api/sessions/{id}", get(read_session).patch(rename_session))
         .route("/api/sessions/{id}", delete(remove_session))
         .route("/api/sessions/{id}/select", post(select_session))
+        .route("/api/sessions/{id}/export", get(export_session))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&bind)
@@ -219,6 +220,33 @@ async fn select_session(State(state): State<AppState>, AxPath(id): AxPath<String
         Ok(s) => {
             agent.switch_session(s);
             Json(serde_json::json!({"id": id})).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
+    }
+}
+
+/// The conversation as a Markdown document, offered as a download.
+async fn export_session(State(state): State<AppState>, AxPath(id): AxPath<String>) -> Response {
+    if !Session::exists(&state.home, &id) {
+        return (StatusCode::NOT_FOUND, "no such session").into_response();
+    }
+    match Session::open(&state.home, &id) {
+        Ok(s) => {
+            let title = s.display_title();
+            let body = dto::to_markdown(&title, &s.messages);
+            (
+                [
+                    (header::CONTENT_TYPE, "text/markdown; charset=utf-8".to_string()),
+                    // The filename is derived from the title, so it is sanitized
+                    // before it reaches a header the browser will write to disk.
+                    (
+                        header::CONTENT_DISPOSITION,
+                        format!("attachment; filename=\"{}\"", dto::export_filename(&title)),
+                    ),
+                ],
+                body,
+            )
+                .into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
     }

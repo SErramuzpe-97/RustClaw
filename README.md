@@ -99,6 +99,12 @@ or Claude.ai subscription login is not an API credential and will not work here.
 allowed_chat_ids = [123456789]   # empty means anyone
 ```
 
+## Exporting
+
+Any conversation downloads as Markdown from the sidebar or the toolbar, or via
+`GET /api/sessions/<id>/export`. Assistant turns are emitted verbatim so code
+fences survive; tool output is folded into `<details>` blocks.
+
 ## Tools
 
 `exec`, `read`, `write`, `edit`, `ls`, `glob`, `grep`, `web_fetch`.
