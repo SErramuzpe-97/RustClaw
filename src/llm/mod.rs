@@ -27,7 +27,9 @@ pub struct Request<'a> {
     pub messages: &'a [Message],
     pub tools: &'a [ToolSchema],
     pub max_tokens: u32,
-    pub temperature: f32,
+    /// `None` omits the parameter. Required for current Anthropic models,
+    /// which reject any sampling parameter.
+    pub temperature: Option<f32>,
 }
 
 /// Sink for streaming deltas. A plain `FnMut` rather than a trait object: the

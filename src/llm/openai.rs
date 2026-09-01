@@ -65,12 +65,14 @@ impl Client {
             "model": self.model,
             "messages": messages,
             "max_tokens": req.max_tokens,
-            "temperature": req.temperature,
             "stream": true,
             // Not every OpenAI-compatible server honours this, but the ones
             // that do give us exact token counts instead of the chars/4 guess.
             "stream_options": {"include_usage": true},
         });
+        if let Some(t) = req.temperature {
+            body["temperature"] = json!(t);
+        }
         if !req.tools.is_empty() {
             body["tools"] = Value::Array(req.tools.iter().map(encode_tool).collect());
         }
@@ -298,6 +300,29 @@ mod tests {
             error: None,
         };
         assert_eq!(encode_message(&m)["content"], "hello");
+    }
+
+    #[test]
+    fn temperature_is_omitted_unless_explicitly_configured() {
+        let client = Client {
+            http: reqwest::Client::new(),
+            base_url: "http://localhost/v1".into(),
+            model: "m".into(),
+            api_key: None,
+        };
+        let msgs = [Message::user("hi")];
+        let req = |temperature| Request {
+            system: "s",
+            messages: &msgs,
+            tools: &[],
+            max_tokens: 100,
+            temperature,
+        };
+        assert!(client.build_body(&req(None)).get("temperature").is_none());
+        // f32 -> f64 widening makes an exact compare brittle; the point is
+        // that the field is present and carries the value.
+        let sent = client.build_body(&req(Some(0.5)));
+        assert!((sent["temperature"].as_f64().unwrap() - 0.5).abs() < 1e-6);
     }
 
     #[test]

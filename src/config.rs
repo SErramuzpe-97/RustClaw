@@ -29,7 +29,11 @@ pub struct ModelConfig {
     pub api_key_env: String,
     pub max_tokens: u32,
     pub context_window: u32,
-    pub temperature: f32,
+    /// Omitted from the request when unset. Leave it unset for Anthropic:
+    /// Opus 5, Sonnet 5 and the 4.6+ family removed sampling parameters and
+    /// return 400 if one is sent. Local servers accept it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
 }
 
 impl Default for ModelConfig {
@@ -43,7 +47,7 @@ impl Default for ModelConfig {
             api_key_env: String::new(),
             max_tokens: 4096,
             context_window: 32_768,
-            temperature: 0.7,
+            temperature: None,
         }
     }
 }

@@ -64,10 +64,16 @@ The same backend covers llama.cpp's `server`, vLLM, Groq, OpenRouter and DeepSee
 [model]
 backend = "anthropic"
 base_url = "https://api.anthropic.com/v1"
-model = "claude-sonnet-5"
+model = "claude-opus-5"
 api_key_env = "ANTHROPIC_API_KEY"
-context_window = 200000
+context_window = 1000000
+max_tokens = 32000
 ```
+
+Do **not** set `temperature` for these models: Opus 5, Sonnet 5 and the 4.6+
+family removed the sampling parameters and return a 400 if one is sent. The key
+is read from the environment; get one from console.anthropic.com. A Claude Code
+or Claude.ai subscription login is not an API credential and will not work here.
 
 **Telegram** — set `TELEGRAM_BOT_TOKEN`, then restrict who may talk to it:
 

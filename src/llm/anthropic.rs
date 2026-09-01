@@ -69,13 +69,19 @@ impl Client {
         let mut body = json!({
             "model": self.model,
             "max_tokens": req.max_tokens,
-            "temperature": req.temperature,
             "stream": true,
             // Anthropic takes the system prompt as a top-level field rather
             // than a message.
             "system": req.system,
             "messages": encode_messages(req.messages),
         });
+        // Sampling parameters were removed from Opus 5, Sonnet 5 and the 4.6+
+        // family: sending `temperature` at all returns a 400. Only forward it
+        // when the operator explicitly asked for one (older models, or a
+        // proxy that still accepts it).
+        if let Some(t) = req.temperature {
+            body["temperature"] = json!(t);
+        }
         if !req.tools.is_empty() {
             body["tools"] = Value::Array(req.tools.iter().map(encode_tool).collect());
         }
@@ -254,6 +260,9 @@ fn decode_stop(reason: &str) -> StopReason {
     match reason {
         "tool_use" => StopReason::ToolUse,
         "max_tokens" => StopReason::Length,
+        // A safety refusal arrives as HTTP 200 with this stop reason; treating
+        // it as a normal stop would show the user an empty reply with no cause.
+        "refusal" => StopReason::Error,
         _ => StopReason::Stop,
     }
 }
@@ -332,6 +341,43 @@ mod tests {
             error: None,
         }];
         assert!(encode_messages(&msgs).as_array().unwrap().is_empty());
+    }
+
+    fn client_for(model: &str) -> Client {
+        Client {
+            http: reqwest::Client::new(),
+            base_url: "https://api.anthropic.com/v1".into(),
+            model: model.into(),
+            api_key: "k".into(),
+        }
+    }
+
+    fn body_for(temperature: Option<f32>) -> Value {
+        let msgs = [Message::user("hi")];
+        client_for("claude-opus-5").build_body(&Request {
+            system: "s",
+            messages: &msgs,
+            tools: &[],
+            max_tokens: 100,
+            temperature,
+        })
+    }
+
+    #[test]
+    fn temperature_is_omitted_unless_explicitly_configured() {
+        // Opus 5, Sonnet 5 and the 4.6+ family removed sampling parameters:
+        // sending `temperature` at all returns a 400.
+        assert!(
+            body_for(None).get("temperature").is_none(),
+            "an unset temperature must not reach the wire"
+        );
+        assert_eq!(body_for(Some(0.5))["temperature"], 0.5);
+    }
+
+    #[test]
+    fn a_safety_refusal_is_not_reported_as_a_normal_stop() {
+        assert_eq!(decode_stop("refusal"), StopReason::Error);
+        assert_eq!(decode_stop("end_turn"), StopReason::Stop);
     }
 
     #[test]

@@ -93,8 +93,9 @@ pub async fn generate_summary(provider: &Provider, messages: &[Message]) -> Resu
                 messages: &ask,
                 tools: &[],
                 max_tokens: 4096,
-                // Deterministic: a summary is a factual record, not prose.
-                temperature: 0.0,
+                // A summary is a factual record, not prose, so pin sampling
+                // low where the backend accepts it at all.
+                temperature: None,
             },
             &mut sink,
         )
