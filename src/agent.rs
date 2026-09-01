@@ -118,7 +118,18 @@ impl Agent {
     }
 
     /// Run one turn to completion and return the assistant's final text.
+    ///
+    /// `TurnEnd` is the signal every surface waits on to stop rendering and
+    /// re-enable input, so it is emitted here on *every* exit path. Emitting it
+    /// only on the success path deadlocked the REPL and left the web UI's form
+    /// disabled after any error.
     pub async fn run_turn(&mut self, input: String, cancel: CancellationToken) -> Result<String> {
+        let result = self.drive_turn(input, cancel).await;
+        self.emit(AgentEvent::TurnEnd { usage: self.last_usage.clone() });
+        result
+    }
+
+    async fn drive_turn(&mut self, input: String, cancel: CancellationToken) -> Result<String> {
         self.session.append(Message::user(input))?;
         self.emit(AgentEvent::TurnStart);
 
@@ -198,7 +209,6 @@ impl Agent {
         }
 
         self.emit(AgentEvent::Reply(final_text.clone()));
-        self.emit(AgentEvent::TurnEnd { usage: self.last_usage.clone() });
         Ok(final_text)
     }
 

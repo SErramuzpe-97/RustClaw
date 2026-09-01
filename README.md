@@ -56,7 +56,20 @@ model = "qwen2.5:3b"
 context_window = 32768
 ```
 
-The same backend covers llama.cpp's `server`, vLLM, Groq, OpenRouter and DeepSeek.
+The same backend covers Mistral, llama.cpp's `server`, vLLM, Groq, OpenRouter and
+DeepSeek. For Mistral:
+
+```toml
+[model]
+backend = "openai-compat"
+base_url = "https://api.mistral.ai/v1"
+model = "mistral-large-latest"
+api_key_env = "MISTRAL_API_KEY"
+context_window = 262144
+```
+
+Set `stream_usage = false` for a compatible server that rejects the
+`stream_options` field.
 
 **Anthropic:**
 

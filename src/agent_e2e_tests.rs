@@ -285,6 +285,46 @@ async fn an_http_error_from_the_provider_ends_the_turn_without_losing_the_sessio
 }
 
 #[tokio::test]
+async fn every_failing_exit_path_still_emits_turn_end() {
+    // TurnEnd is what the REPL's printer and the web UI's form wait on. A path
+    // that returns without it hangs the REPL forever and leaves the UI stuck.
+    let stub = StubModel::start(vec![]).await; // accepts, then drops: the call fails
+    let (mut agent, _root) = agent_for("turnend", stub.port).await;
+    let mut events = agent.subscribe();
+
+    agent.run_turn("hola".into(), CancellationToken::new()).await.unwrap();
+
+    let mut saw_error = false;
+    let mut saw_turn_end = false;
+    while let Ok(ev) = events.try_recv() {
+        match ev {
+            AgentEvent::Error(_) => saw_error = true,
+            AgentEvent::TurnEnd { .. } => saw_turn_end = true,
+            _ => {}
+        }
+    }
+    assert!(saw_error, "the failure should be reported");
+    assert!(saw_turn_end, "TurnEnd must follow even a failed turn");
+}
+
+#[tokio::test]
+async fn a_cancelled_turn_emits_turn_end_too() {
+    let stub = StubModel::start(vec![]).await;
+    let (mut agent, _root) = agent_for("cancelend", stub.port).await;
+    let mut events = agent.subscribe();
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+
+    agent.run_turn("hola".into(), CancellationToken::new()).await.ok();
+    agent.run_turn("otra".into(), cancel).await.ok();
+
+    let ends = std::iter::from_fn(|| events.try_recv().ok())
+        .filter(|e| matches!(e, AgentEvent::TurnEnd { .. }))
+        .count();
+    assert_eq!(ends, 2, "each turn must close with exactly one TurnEnd");
+}
+
+#[tokio::test]
 async fn a_cancelled_turn_stops_before_running_the_tool() {
     let call = [
         frame(r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"exec","arguments":"{\"command\":\"echo should-not-run\"}"}}]}}]}"#),
