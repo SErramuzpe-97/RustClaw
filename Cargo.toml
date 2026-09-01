@@ -1,0 +1,68 @@
+[package]
+name = "rustclaw"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+description = "A lean OpenClaw-style AI assistant in Rust, sized for NVIDIA Jetson"
+license = "MIT"
+
+[features]
+default = ["telegram", "webui"]
+telegram = []
+webui = ["dep:axum", "dep:tower-http"]
+
+[dependencies]
+# Async runtime: current-thread flavor only. The workload is IO-bound (HTTP to
+# the model), so worker threads would only cost stacks and contention.
+tokio = { version = "1", default-features = false, features = [
+    "rt", "macros", "net", "time", "io-util", "io-std", "process", "signal", "sync", "fs",
+] }
+tokio-util = { version = "0.7", default-features = false }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+
+# HTTP. rustls + compiled-in roots: the Jetson runs Ubuntu 18.04 whose CA
+# bundle is stale, and OpenSSL cannot be linked cleanly into a static musl bin.
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls-webpki-roots", "stream", "json", "http2", "charset",
+] }
+eventsource-stream = "0.2"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+
+clap = { version = "4", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
+anyhow = "1"
+thiserror = "2"
+
+globset = "0.4"
+regex = "1"
+walkdir = "2"
+
+time = { version = "0.3", default-features = false, features = ["std", "formatting", "macros"] }
+
+# musl's mallocng is slow enough to erase the benefit of a static build.
+[target.'cfg(target_env = "musl")'.dependencies]
+mimalloc = { version = "0.1", default-features = false }
+
+[dependencies.axum]
+version = "0.8"
+default-features = false
+features = ["http1", "json", "tokio", "query"]
+optional = true
+
+[dependencies.tower-http]
+version = "0.6"
+default-features = false
+features = ["cors"]
+optional = true
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev]
+opt-level = 1

@@ -1,0 +1,4 @@
+# The TX2 pairs 4x Cortex-A57 with 2x Denver2. Both are ARMv8-A with the same
+# feature set (crc, crypto), so tuning for A57 is safe on either cluster.
+[target.aarch64-unknown-linux-musl]
+rustflags = ["-C", "target-cpu=cortex-a57", "-C", "target-feature=+crt-static"]
