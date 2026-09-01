@@ -122,7 +122,7 @@ async fn agent_for(tag: &str, port: u16) -> (Agent, PathBuf) {
 
 #[tokio::test]
 async fn a_plain_reply_streams_through_and_lands_in_the_transcript() {
-    let script = vec![
+    let script = [
         frame(r#"{"choices":[{"delta":{"content":"Hola"}}]}"#),
         frame(r#"{"choices":[{"delta":{"content":", qué tal"}}]}"#),
         frame(r#"{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":4}}"#),
@@ -161,7 +161,7 @@ async fn a_plain_reply_streams_through_and_lands_in_the_transcript() {
 async fn a_tool_call_is_executed_and_its_result_feeds_the_next_model_call() {
     // Turn 1: the model asks to run a command, with the arguments split across
     // deltas the way a real server sends them.
-    let call = vec![
+    let call = [
         frame(r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"exec","arguments":""}}]}}]}"#),
         frame(r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"comm"}}]}}]}"#),
         frame(r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"and\": \"echo ping\"}"}}]}}]}"#),
@@ -169,7 +169,7 @@ async fn a_tool_call_is_executed_and_its_result_feeds_the_next_model_call() {
         "data: [DONE]\n\n".to_string(),
     ];
     // Turn 2: having seen the output, the model answers.
-    let answer = vec![
+    let answer = [
         frame(r#"{"choices":[{"delta":{"content":"it said ping"}}]}"#),
         frame(r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#),
         "data: [DONE]\n\n".to_string(),
@@ -205,12 +205,12 @@ async fn a_tool_call_is_executed_and_its_result_feeds_the_next_model_call() {
 
 #[tokio::test]
 async fn a_failing_tool_is_reported_as_an_error_result_and_the_turn_continues() {
-    let call = vec![
+    let call = [
         frame(r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read","arguments":"{\"path\":\"/definitely/not/here\"}"}}]}}]}"#),
         frame(r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#),
         "data: [DONE]\n\n".to_string(),
     ];
-    let answer = vec![
+    let answer = [
         frame(r#"{"choices":[{"delta":{"content":"that file is missing"}}]}"#),
         frame(r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#),
         "data: [DONE]\n\n".to_string(),
@@ -234,12 +234,12 @@ async fn a_failing_tool_is_reported_as_an_error_result_and_the_turn_continues() 
 
 #[tokio::test]
 async fn an_unknown_tool_is_reported_back_to_the_model_rather_than_crashing() {
-    let call = vec![
+    let call = [
         frame(r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"teleport","arguments":"{}"}}]}}]}"#),
         frame(r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#),
         "data: [DONE]\n\n".to_string(),
     ];
-    let answer = vec![
+    let answer = [
         frame(r#"{"choices":[{"delta":{"content":"no such tool"}}]}"#),
         frame(r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#),
         "data: [DONE]\n\n".to_string(),
@@ -286,7 +286,7 @@ async fn an_http_error_from_the_provider_ends_the_turn_without_losing_the_sessio
 
 #[tokio::test]
 async fn a_cancelled_turn_stops_before_running_the_tool() {
-    let call = vec![
+    let call = [
         frame(r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"exec","arguments":"{\"command\":\"echo should-not-run\"}"}}]}}]}"#),
         frame(r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#),
         "data: [DONE]\n\n".to_string(),
